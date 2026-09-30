@@ -1,0 +1,27 @@
+{
+  "name": "conference-interpreting-cue-desk",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+  },
+  "dependencies": {
+    "@sveltejs/adapter-static": "3.0.10",
+    "@sveltejs/kit": "2.50.2",
+    "flowbite-svelte": "0.48.6",
+    "svelte": "5.39.8"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "5.1.1",
+    "autoprefixer": "10.4.21",
+    "postcss": "8.5.6",
+    "svelte-check": "4.3.2",
+    "tailwindcss": "3.4.17",
+    "typescript": "5.9.3",
+    "vite": "6.4.3"
+  }
+}
