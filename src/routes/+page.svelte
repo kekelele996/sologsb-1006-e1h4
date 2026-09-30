@@ -3,11 +3,11 @@
   import Button from 'flowbite-svelte/Button.svelte'
   import {
     acknowledgeReminder, addAnnouncement, addSession, addSpeaker, addTerm, canRedo, canUndo, clearDuplicate,
-    deleteCue, desk, getDelay, ingestCue, moveCue, publishAnnouncement, redoDesk, sendReminder, setActiveCue,
-    setCueStatus, setFontScale, setLiveSimulation, setOnline, speakerName, termTarget, undoDesk, updateCue,
-    updateSession, updateSpeaker, updateTerm
+    deleteCue, desk, getDelay, identity, ingestCue, initSync, moveCue, publishAnnouncement, redoDesk,
+    resolveConflict, retrySync, sendReminder, setActiveCue, setCueStatus, setFontScale, setLiveSimulation,
+    setOnline, speakerName, syncStatus, termTarget, undoDesk, updateCue, updateSession, updateSpeaker, updateTerm
   } from '$lib/store'
-  import type { Announcement, Cue, Session, TabId, Term } from '$lib/types'
+  import type { Announcement, Cue, CueStatus, Session, TabId, Term } from '$lib/types'
 
   const liveLines = [
     'Cooling corridors can connect parks, schools, and shaded transit stops.',
@@ -41,6 +41,7 @@
   $: unreadReminders = $desk.reminders.filter(item => !item.acknowledged)
 
   onMount(() => {
+    initSync()
     if (typeof navigator !== 'undefined') setOnline(navigator.onLine)
     const onlineHandler = () => setOnline(true)
     const offlineHandler = () => setOnline(false)
@@ -116,6 +117,21 @@
   function statusLabel(status: Cue['status']) {
     return ({ pending: '待传', confirmed: '已确认', followup: '有补充' })[status]
   }
+  function conflictChoice(cue: Cue, choice: 'first' | 'second') {
+    const conflict = cue.conflict
+    if (!conflict) return null
+    return choice === 'first' ? conflict.first : conflict.second
+  }
+  /** 舞台不回退：选择的处理版本若低于当前状态（如已确认→待传）则不可选 */
+  function choiceWouldUnstage(cue: Cue, choice: 'first' | 'second'): boolean {
+    const version = conflictChoice(cue, choice)
+    if (!version) return false
+    const rank = (status: CueStatus) => (status === 'confirmed' ? 2 : status === 'followup' ? 1 : 0)
+    return rank(version.status) < rank(cue.status)
+  }
+  function conflictActionLabel(status: CueStatus) {
+    return status === 'confirmed' ? '确认已传' : status === 'followup' ? '标记补充' : '保持待传'
+  }
   function handleKeyboard(event: KeyboardEvent) {
     const target = event.target as HTMLElement
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
@@ -155,6 +171,11 @@
         {/each}
       </nav>
       <div class="ml-auto flex flex-wrap items-center gap-2">
+        {#if $identity}
+          <span class="rounded-full border border-slate-600 px-3 py-1.5 text-[11px] font-bold text-slate-300" title="接力值守的标签页身份，仅保存在本标签页">
+            <span class="mr-2 inline-block h-2 w-2 rounded-full" style="background:{$identity.color}"></span>本页 {$identity.name}
+          </span>
+        {/if}
         <span class="rounded-full border px-3 py-1.5 text-[11px] font-bold {$desk.online ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300' : 'border-amber-500/40 bg-amber-500/15 text-amber-300'}">
           <span class="mr-2 inline-block h-2 w-2 rounded-full {$desk.online ? 'bg-emerald-400' : 'bg-amber-400'}"></span>{$desk.online ? '现场连接正常' : '离线 · 本地暂存'}
         </span>
@@ -169,6 +190,16 @@
   </header>
 
   {#if notice}<div role="status" class="fixed right-5 top-20 z-50 rounded-xl border border-teal-200 bg-white px-4 py-3 text-sm font-bold text-teal-800 shadow-2xl">{notice}</div>{/if}
+
+  {#if $syncStatus === 'error'}
+    <div role="alert" class="fixed right-5 top-20 z-50 max-w-md rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm font-bold text-red-800 shadow-2xl">
+      <p>多标签队列同步失败：本页修改暂未并入共享队列，对方的确认与提醒也不会被覆盖。</p>
+      <div class="mt-2 flex items-center gap-3">
+        <button class="rounded-lg bg-red-700 px-3 py-1.5 text-xs font-black text-white" on:click={retrySync}>立即重试</button>
+        <span class="text-[11px] font-normal text-red-600">将在数秒后自动重试，期间可继续值守。</span>
+      </div>
+    </div>
+  {/if}
 
   <main id="main" class="mx-auto max-w-[1800px] p-4 lg:p-6">
     {#if tab === 'live'}
@@ -198,7 +229,7 @@
               {/each}
               {#each $desk.cues.filter(item => item.status === 'confirmed').slice(-2) as cue}
                 <div class="rounded-xl bg-white/10 p-3">
-                  <div class="mb-1 flex justify-between text-[10px] text-teal-200"><span>{speakerName($desk, cue.speakerId)}</span><span>{formatTime(cue.receivedAt)}</span></div>
+                  <div class="mb-1 flex justify-between text-[10px] text-teal-200"><span>{speakerName($desk, cue.speakerId)}{#if cue.confirmedBy} · {cue.confirmedBy.name} 确认{/if}</span><span>{formatTime(cue.receivedAt)}</span></div>
                   <p class="text-base leading-relaxed lg:text-lg">{cue.text}</p>
                 </div>
               {/each}
@@ -224,6 +255,7 @@
                         <span class="rounded-md bg-slate-100 px-2 py-1 text-slate-600">{speakerName($desk, cue.speakerId)}</span>
                         <span class="rounded-md border px-2 py-1 {delayClass(getDelay(cue, now))}">{formatTime(cue.receivedAt)} · 延迟 {getDelay(cue, now)}s</span>
                         <span class="rounded-md px-2 py-1 {cue.status === 'confirmed' ? 'bg-emerald-100 text-emerald-800' : cue.status === 'followup' ? 'bg-amber-100 text-amber-900' : 'bg-blue-100 text-blue-800'}">{statusLabel(cue.status)}</span>
+                        {#if cue.confirmedBy}<span class="rounded-md bg-emerald-50 px-2 py-1 text-emerald-700">先确认 · {cue.confirmedBy.name} {formatTime(cue.confirmedBy.at)}</span>{/if}
                         {#if cue.offline}<span class="rounded-md bg-amber-100 px-2 py-1 text-amber-900">离线暂存</span>{/if}
                         {#if cue.manual}<span class="rounded-md bg-slate-100 px-2 py-1 text-slate-600">手工</span>{/if}
                       </div>
@@ -234,7 +266,29 @@
                           <button class="font-black underline" on:click|stopPropagation={() => clearDuplicate(cue.id)}>确认非重复</button>
                         </div>
                       {/if}
-                      {#if cue.followupText}<p class="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900"><strong>补译：</strong>{cue.followupText}</p>{/if}
+                      {#if cue.conflict && !cue.conflict.resolution}
+                        <div class="mt-2 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">
+                          <p class="font-black">同一条字幕两人先后处理，两版已分别保留：</p>
+                          <p class="mt-1">
+                            <strong>{cue.conflict.first.name}</strong> 先于 {formatTime(cue.conflict.first.at)} {conflictActionLabel(cue.conflict.first.status)}；
+                            <strong>{cue.conflict.second.name}</strong> 后于 {formatTime(cue.conflict.second.at)} {conflictActionLabel(cue.conflict.second.status)}。
+                            已上舞台的确认不会回退，请选择舞台显示版本：
+                          </p>
+                          <div class="mt-2 flex flex-wrap gap-2">
+                            <button class="rounded-lg border border-red-300 bg-white px-2 py-1 font-black underline" disabled={choiceWouldUnstage(cue, 'first')} title={choiceWouldUnstage(cue, 'first') ? '先确认已上舞台，不能回退' : ''} on:click|stopPropagation={() => resolveConflict(cue.id, 'first')}>采用先到版本（{cue.conflict.first.name}）</button>
+                            <button class="rounded-lg border border-red-300 bg-white px-2 py-1 font-black underline" disabled={choiceWouldUnstage(cue, 'second')} title={choiceWouldUnstage(cue, 'second') ? '先确认已上舞台，不能回退' : ''} on:click|stopPropagation={() => resolveConflict(cue.id, 'second')}>采用晚到版本（{cue.conflict.second.name}）</button>
+                          </div>
+                        </div>
+                      {:else if cue.conflict?.resolution}
+                        <div class="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] text-slate-500">
+                          已采用 {cue.conflict.resolution === 'first' ? cue.conflict.first.name : cue.conflict.second.name} 的版本，两版处理均已保留。
+                        </div>
+                      {/if}
+                      {#each cue.followups ?? [] as followup}
+                        <p class="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900"><strong>补译 · {followup.name} {formatTime(followup.at)}：</strong>{followup.text}</p>
+                      {:else}
+                        {#if cue.followupText}<p class="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900"><strong>补译：</strong>{cue.followupText}</p>{/if}
+                      {/each}
                       <div class="mt-2 flex flex-wrap gap-1">{#each cue.tags as tag}<span class="rounded-full bg-teal-100 px-2 py-1 text-[10px] font-bold text-teal-800">{tag}</span>{/each}</div>
                     </div>
                   </div>
